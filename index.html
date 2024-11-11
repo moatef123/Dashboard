@@ -1,0 +1,313 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import os
+import plotly.graph_objs as go
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Set Up Streamlit Page Configuration (Title and Layout)
+st.set_page_config(page_title='Sensor Data Dashboard', layout='wide')
+
+# Welcome Note
+st.title('Welcome to Your Physiological Data Analyzer During Exercise')
+st.write('This dashboard allows you to visualize and analyze physiological data collected during your exercise. Choose an analysis type to get started.')
+
+# Load Pre-Processed Data
+@st.cache_data
+def load_processed_data():
+    base_path = 'C:/Users/mty_1/Fontys/DT/data/processed/'
+
+    # Load the cleaned CSV files into a dictionary
+    data_day1_cleaned = {
+        'ACC': pd.read_csv(os.path.join(base_path, 'ACC_Day1_cleaned.csv')),
+        'BVP': pd.read_csv(os.path.join(base_path, 'BVP_Day1_cleaned.csv')),
+        'EDA': pd.read_csv(os.path.join(base_path, 'EDA_Day1_cleaned.csv')),
+        'HR': pd.read_csv(os.path.join(base_path, 'HR_Day1_cleaned.csv')),
+        'TEMP': pd.read_csv(os.path.join(base_path, 'TEMP_Day1_cleaned.csv'))
+    }
+    
+    data_day2_cleaned = {
+        'ACC': pd.read_csv(os.path.join(base_path, 'ACC_Day2_cleaned.csv')),
+        'BVP': pd.read_csv(os.path.join(base_path, 'BVP_Day2_cleaned.csv')),
+        'EDA': pd.read_csv(os.path.join(base_path, 'EDA_Day2_cleaned.csv')),
+        'HR': pd.read_csv(os.path.join(base_path, 'HR_Day2_cleaned.csv')),
+        'TEMP': pd.read_csv(os.path.join(base_path, 'TEMP_Day2_cleaned.csv'))
+    }
+    
+    data_day3_cleaned = {
+        'ACC': pd.read_csv(os.path.join(base_path, 'ACC_Day3_cleaned.csv')),
+        'BVP': pd.read_csv(os.path.join(base_path, 'BVP_Day3_cleaned.csv')),
+        'EDA': pd.read_csv(os.path.join(base_path, 'EDA_Day3_cleaned.csv')),
+        'HR': pd.read_csv(os.path.join(base_path, 'HR_Day3_cleaned.csv')),
+        'TEMP': pd.read_csv(os.path.join(base_path, 'TEMP_Day3_cleaned.csv'))
+    }
+
+    return data_day1_cleaned, data_day2_cleaned, data_day3_cleaned
+
+# Load the data
+data_day1_cleaned, data_day2_cleaned, data_day3_cleaned = load_processed_data()
+
+# Helper functions
+def calculate_acc_magnitude(acc_data):
+    magnitude = (acc_data['X']**2 + acc_data['Y']**2 + acc_data['Z']**2) ** 0.5
+    acc_data['Magnitude'] = magnitude
+    return acc_data
+
+def normalize_data(series):
+    # Ensure the series is numeric, dropping NaNs and filling any remaining NaNs with zeros
+    series = pd.to_numeric(series, errors='coerce').fillna(0)
+    if series.max() == series.min():
+        return series  # Avoid division by zero if all values are the same
+    return (series - series.min()) / (series.max() - series.min())
+
+def prepare_data_for_day(day_data):
+    try:
+        eda_data = normalize_data(pd.to_numeric(day_data["EDA"]['EDA'], errors='coerce').fillna(0))
+        acc_data = calculate_acc_magnitude(day_data["ACC"])
+        acc_magnitude = normalize_data(pd.to_numeric(acc_data['Magnitude'], errors='coerce').fillna(0))
+        hr_data = normalize_data(pd.to_numeric(day_data["HR"]['HR'], errors='coerce').fillna(0))
+        temp_data = normalize_data(pd.to_numeric(day_data["TEMP"].iloc[:, 1], errors='coerce').fillna(0))
+        bvp_data = normalize_data(pd.to_numeric(day_data["BVP"]['BVP'], errors='coerce').fillna(0))
+         # Fix TEMP Data Selection: use proper column and normalization
+        if 'TEMP' in day_data and not day_data['TEMP'].empty:
+            temp_data_column = day_data["TEMP"].columns[-1]  # Assume last column is correct for TEMP values
+            temp_data = normalize_data(pd.to_numeric(day_data["TEMP"][temp_data_column], errors='coerce').fillna(0))
+        else:
+            temp_data = pd.Series([])  # Handle case when TEMP is missing
+        
+        bvp_data = normalize_data(pd.to_numeric(day_data["BVP"]['BVP'], errors='coerce').fillna(0))
+        # Align data by taking the minimum length across all signals
+        min_length = min(len(eda_data), len(acc_magnitude), len(hr_data), len(temp_data), len(bvp_data))
+        if min_length == 0:
+            st.error("No sufficient data available for normalization.")
+            return pd.DataFrame()
+
+        eda_data = eda_data[:min_length]
+        acc_magnitude = acc_magnitude[:min_length]
+        hr_data = hr_data[:min_length]
+        temp_data = temp_data[:min_length]
+        bvp_data = bvp_data[:min_length]
+
+        return pd.DataFrame({
+            'EDA': eda_data,
+            'ACC Magnitude': acc_magnitude,
+            'HR': hr_data,
+            'TEMP': temp_data,
+            'BVP': bvp_data
+        })
+    except Exception as e:
+        st.error(f"Error during data preparation: {e}")
+        return pd.DataFrame()
+
+# Prepare the data for each day
+day1_data = prepare_data_for_day(data_day1_cleaned)
+day2_data = prepare_data_for_day(data_day2_cleaned)
+day3_data = prepare_data_for_day(data_day3_cleaned)
+
+# Streamlit Sidebar Widgets
+st.sidebar.title('Choose Analysis Type')
+analysis_type = st.sidebar.radio('Select Analysis:', ['Normalized Comparisons', 'Summary Statistics', 'Exercise Intensity Over Days'])
+day_label = st.sidebar.selectbox('Select Day:', ['Day 1', 'Day 2', 'Day 3'])
+variable = st.sidebar.selectbox('Select Variable to Compare with EDA:', ['ACC Magnitude', 'HR', 'TEMP', 'BVP'])
+
+# Function to Describe Graph Observations
+def describe_graph_observations(eda_data, other_data, variable_name):
+    if eda_data.empty or other_data.empty:
+        return "No sufficient data available for observations."
+    
+    observations = []
+    if eda_data.mean() > other_data.mean():
+        observations.append(f"The EDA values tend to be higher compared to the {variable_name} values on average.")
+    else:
+        observations.append(f"The {variable_name} values tend to be higher compared to the EDA values on average.")
+
+    correlation = eda_data.corr(other_data)
+    if pd.isna(correlation):
+        observations.append(f"Unable to calculate correlation between EDA and {variable_name} due to insufficient data.")
+    elif correlation > 0.7:
+        observations.append(f"There is a strong positive correlation ({correlation:.2f}) between EDA and {variable_name}.")
+    elif correlation < -0.7:
+        observations.append(f"There is a strong negative correlation ({correlation:.2f}) between EDA and {variable_name}.")
+    else:
+        observations.append(f"Since your EDA remained stable, there’s no psychological stress observed during the exercise. Correlation is low ({correlation:.2f}).")
+
+    return " ".join(observations)
+
+# Plot Interactive Graph using Plotly
+def interactive_plot(day_label, variable):
+    if day_label == "Day 1":
+        df = day1_data
+    elif day_label == "Day 2":
+        df = day2_data
+    else:
+        df = day3_data
+
+    if df.empty:
+        st.warning("No sufficient data available for plotting.")
+        return
+
+    fig = go.Figure()
+    if 'EDA' in df.columns and not df['EDA'].empty:
+        fig.add_trace(go.Scatter(y=df['EDA'], mode='lines', name='EDA', line=dict(color='blue', width=2)))
+    else:
+        st.warning("No EDA data available to plot.")
+
+    if variable in df.columns and not df[variable].empty:
+        fig.add_trace(go.Scatter(y=df[variable], mode='lines', name=variable, line=dict(width=2)))
+    else:
+        st.warning(f"No data available for variable: {variable}.")
+
+    fig.update_layout(
+        title=f'{variable} and EDA Relationship - {day_label}',
+        xaxis_title='Time Index',
+        yaxis_title='Normalized Values',
+        legend_title='Signals',
+        template='plotly_white',
+        annotations=[
+            dict(
+                x=0.5,
+                y=-0.2,
+                xref='paper',
+                yref='paper',
+                showarrow=False,
+                text='Exercise Time (minutes)'
+            )
+        ]
+    )
+
+    st.plotly_chart(fig)
+
+    # Display Graph Observations
+    st.subheader(f"Observations for {variable} and EDA Relationship - {day_label}")
+    observations = describe_graph_observations(df['EDA'], df[variable], variable)
+    st.write(observations)
+
+# Function to Describe Statistical Summary
+def describe_summary_statistics(df, key, column, day_label):
+    if df.empty or column not in df.columns:
+        return f"No data available to describe summary statistics for {column} in {key}."
+
+    series = pd.to_numeric(df[column], errors='coerce').dropna()
+    if series.empty:
+        return f"No valid data for column '{column}' after cleaning in {key}."
+
+    mean_value = series.mean()
+    median_value = series.median()
+    std_dev = series.std()
+    min_value = series.min()
+    max_value = series.max()
+    duration = len(series) / 60.0  # Assume each row represents 1 second for exercise duration, convert to minutes
+
+    observations = [
+        f"Statistical Summary for {column} in {key} ({day_label}):",
+        f"- Mean ({column}): {mean_value:.2f}",
+        f"- Median ({column}): {median_value:.2f}",
+        f"- Standard Deviation ({column}): {std_dev:.2f}",
+        f"- Minimum ({column}): {min_value:.2f}",
+        f"- Maximum ({column}): {max_value:.2f}",
+        f"- Total Duration of Exercise (minutes): {duration:.2f} minutes"
+    ]
+    
+    return "\n".join(observations)
+
+# Plot Summary Statistics Function
+def plot_summary_statistics(day_data, title_prefix):
+    for key, df in day_data.items():
+        if not isinstance(df, pd.DataFrame):
+            st.write(f"Skipping {key} as it is not a DataFrame.")
+            continue
+
+        # Iterate through columns of each DataFrame, except the 'time' column
+        for column in df.columns:
+            if column == 'time':
+                continue
+
+            # Clean and filter numeric data to avoid issues during plotting
+            data_cleaned = pd.to_numeric(df[column], errors='coerce').dropna()
+
+            # Skip plotting if data is empty after cleaning
+            if data_cleaned.empty:
+                st.write(f"Column '{column}' contains no valid data after cleaning in '{key}'. Skipping.")
+                continue
+
+            # Creating a boxplot on top and histogram below for comparison
+            f, (ax_box, ax_hist) = plt.subplots(2,
+                                                sharex=True,
+                                                gridspec_kw={"height_ratios": (.2, .8)},
+                                                figsize=(12, 8))
+
+            # Plot the boxplot (in landscape orientation)
+            sns.boxplot(x=data_cleaned, ax=ax_box, color='green', orient='h')
+            ax_box.set_title(f"Boxplot of {column} - {title_prefix} ({key})")
+            ax_box.set(xlabel='')
+
+            # Plot the histogram
+            sns.histplot(data_cleaned, ax=ax_hist, kde=True, bins=30, color='blue')
+            ax_hist.set(xlabel=column, title=f"Histogram of {column} - {title_prefix} ({key})")
+
+            # Show the combined plot
+            plt.tight_layout()
+            st.pyplot(f)
+
+            # Display statistical summary explanation
+            summary_explanation = describe_summary_statistics(df, key, column, title_prefix)
+            st.write(summary_explanation)
+
+# Plot Exercise Intensity over Days
+def plot_exercise_intensity_over_days():
+    # Extract HR data as a proxy for exercise intensity over different days
+    df_list = [day1_data['HR'], day2_data['HR'], day3_data['HR']]
+    days = ['Day 1', 'Day 2', 'Day 3']
+    
+    fig = go.Figure()
+    for i, df in enumerate(df_list):
+        if df is not None and not df.empty:
+            fig.add_trace(go.Scatter(y=df, mode='lines', name=f'HR - {days[i]}', line=dict(width=2)))
+        else:
+            st.warning(f"No HR data available for {days[i]}.")
+    
+    fig.update_layout(
+        title='Exercise Intensity (HR) Over Different Days',
+        xaxis_title='Time Index',
+        yaxis_title='Normalized HR',
+        legend_title='Day',
+        template='plotly_white'
+    )
+
+    st.plotly_chart(fig)
+
+# Render the analysis type
+if analysis_type == 'Normalized Comparisons':
+    st.header(f'Analyzing EDA Response in Relation to {variable} to get insight of Exercise Intensity')
+    interactive_plot(day_label, variable)
+
+elif analysis_type == 'Summary Statistics':
+    st.header(f'Summary Statistics for {day_label}')
+    if day_label == "Day 1":
+        plot_summary_statistics(data_day1_cleaned, day_label)
+    elif day_label == "Day 2":
+        plot_summary_statistics(data_day2_cleaned, day_label)
+    elif day_label == "Day 3":
+        plot_summary_statistics(data_day3_cleaned, day_label)
+
+elif analysis_type == 'Exercise Intensity Over Days':
+    st.header('Exercise Intensity Over Different Days')
+    plot_exercise_intensity_over_days()
+
+
+
+
+#streamlit run dashboard_v8.py
+# Generate QR Code for Dashboard URL
+dashboard_url = "http://192.168.2.5:8501"
+qr = qrcode.QRCode(
+    version=1,
+    error_correction=qrcode.constants.ERROR_CORRECT_L,
+    box_size=10,
+    border=4,
+)
+qr.add_data(dashboard_url)
+qr.make(fit=True)
+img = qr.make_image(fill_color="black", back_color="white")
+img.save("dashboard_qr_code.png")
